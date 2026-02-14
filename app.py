@@ -67,16 +67,21 @@ class 반배치프로그램:
         
         self.학생데이터 = df.rename(columns=컬럼매핑)
         
-        # 비고 컬럼에서 제약조건 추출
-        if '비고' in self.학생데이터.columns:
-            # === 다른 반 조건 ===
-            self.학생데이터['동명이인'] = self.학생데이터['비고'].apply(
+        # === 다른 반 조건 컬럼에서 제약조건 추출 ===
+        다른반_컬럼 = None
+        for 후보 in ['다른 반 조건', '다른반조건', '다른반 조건', '비고']:
+            if 후보 in self.학생데이터.columns:
+                다른반_컬럼 = 후보
+                break
+        
+        if 다른반_컬럼:
+            self.학생데이터['동명이인'] = self.학생데이터[다른반_컬럼].apply(
                 lambda x: '동명이인' if pd.notna(x) and '동명이인' in str(x) else np.nan
             )
-            self.학생데이터['쌍둥이'] = self.학생데이터['비고'].apply(
+            self.학생데이터['쌍둥이'] = self.학생데이터[다른반_컬럼].apply(
                 lambda x: '쌍둥이' if pd.notna(x) and '쌍둥이' in str(x) else np.nan
             )
-            self.학생데이터['운동부'] = self.학생데이터['비고'].apply(
+            self.학생데이터['운동부'] = self.학생데이터[다른반_컬럼].apply(
                 lambda x: '운동부' if pd.notna(x) and '운동부' in str(x) else np.nan
             )
             if self.학생데이터['동명이인'].notna().any():
@@ -85,25 +90,28 @@ class 반배치프로그램:
                     if 같은이름.sum() > 1:
                         self.학생데이터.loc[같은이름, '동명이인'] = 이름
             
-            # 비고에서 '-'로 연결된 분리그룹 추출 (예: "홍길동-김영희" → 다른 반 배치)
-            # '같은반:' 으로 시작하는 항목은 제외
-            self.학생데이터['분리그룹'] = self.학생데이터['비고'].apply(
-                lambda x: str(x).strip() if pd.notna(x) and '-' in str(x) and not str(x).strip().startswith('같은반:') else np.nan
+            # '-'로 연결된 분리그룹 추출 (예: "홍길동-김영희" → 다른 반 배치)
+            self.학생데이터['분리그룹'] = self.학생데이터[다른반_컬럼].apply(
+                lambda x: str(x).strip() if pd.notna(x) and '-' in str(x) else np.nan
             )
             
             분리_수 = self.학생데이터['분리그룹'].notna().sum()
             if 분리_수 > 0:
                 self.로그(f"  ✓ [다른 반 조건] 분리그룹 {분리_수}건 발견")
-            
-            # === 같은 반 조건 ===
-            # '같은반:이름A-이름B' 형식 → 같은 반에 배치
-            self.같은반_그룹 = []
-            같은반_엔트리 = self.학생데이터[self.학생데이터['비고'].apply(
-                lambda x: pd.notna(x) and str(x).strip().startswith('같은반:')
-            )]['비고'].unique()
+        
+        # === 같은 반 조건 컬럼에서 제약조건 추출 ===
+        같은반_컬럼 = None
+        for 후보 in ['같은 반 조건', '같은반조건', '같은반 조건']:
+            if 후보 in self.학생데이터.columns:
+                같은반_컬럼 = 후보
+                break
+        
+        self.같은반_그룹 = []
+        if 같은반_컬럼:
+            같은반_엔트리 = self.학생데이터[self.학생데이터[같은반_컬럼].notna()][같은반_컬럼].unique()
             
             for 항목 in 같은반_엔트리:
-                이름부분 = str(항목).replace('같은반:', '').strip()
+                이름부분 = str(항목).strip()
                 학생들 = {s.strip() for s in 이름부분.split('-') if s.strip()}
                 if len(학생들) >= 2:
                     # 기존 그룹과 합치기 (겹치는 이름이 있으면)
@@ -609,50 +617,59 @@ def 예시_엑셀_생성():
         성 = 성_목록[i % len(성_목록)]
         이름 = 이름_남[i]
         성적 = round(np.random.uniform(40, 100), 1)
-        비고 = ''
+        
+        다른반 = ''
+        같은반 = ''
         
         if i == 0:  # 김길복 - 동명이인 예시
             이름 = '길복'
             성 = '김'
+            다른반 = '동명이인'
         elif i == 5:  # 또다른 김길복
             이름 = '길복'
             성 = '김'
-            비고 = '동명이인'
+            다른반 = '동명이인'
         elif i == 1:
-            비고 = '운동부'
+            다른반 = '운동부'
         elif i == 7:
-            비고 = '운동부'
+            다른반 = '운동부'
         elif i == 3:
-            비고 = '최덕배-한기철'  # 다른 반 조건
+            다른반 = '최덕배-한기철'  # 다른 반 조건
         elif i == 10:
-            비고 = '최덕배-한기철'  # 다른 반 조건
+            다른반 = '최덕배-한기철'  # 다른 반 조건
         elif i == 4:
-            비고 = '같은반:정순돌-조춘삼'  # 같은 반 조건
+            같은반 = '정순돌-조춘삼'  # 같은 반 조건
         elif i == 6:
-            비고 = '같은반:정순돌-조춘삼'  # 같은 반 조건
+            같은반 = '정순돌-조춘삼'  # 같은 반 조건
         
-        학생들.append({'성명': 성 + 이름, '성별': '남', '평균': 성적, '비고': 비고 if 비고 else np.nan})
-    
-    # 동명이인 첫번째에도 비고 추가
-    학생들[0]['비고'] = '동명이인'
+        학생들.append({
+            '성명': 성 + 이름, '성별': '남', '평균': 성적,
+            '다른 반 조건': 다른반 if 다른반 else np.nan,
+            '같은 반 조건': 같은반 if 같은반 else np.nan
+        })
     
     # 여자 15명
     for i in range(15):
         성 = 성_목록[(i + 5) % len(성_목록)]
         이름 = 이름_여[i]
         성적 = round(np.random.uniform(40, 100), 1)
-        비고 = ''
+        다른반 = ''
+        같은반 = ''
         
         if i == 2:
-            비고 = '쌍둥이'
+            다른반 = '쌍둥이'
         elif i == 3:
-            비고 = '쌍둥이'
+            다른반 = '쌍둥이'
         elif i == 8:
-            비고 = '같은반:신금순-권복희'  # 같은 반 조건
+            같은반 = '신금순-권복희'  # 같은 반 조건
         elif i == 9:
-            비고 = '같은반:신금순-권복희'  # 같은 반 조건
+            같은반 = '신금순-권복희'  # 같은 반 조건
         
-        학생들.append({'성명': 성 + 이름, '성별': '여', '평균': 성적, '비고': 비고 if 비고 else np.nan})
+        학생들.append({
+            '성명': 성 + 이름, '성별': '여', '평균': 성적,
+            '다른 반 조건': 다른반 if 다른반 else np.nan,
+            '같은 반 조건': 같은반 if 같은반 else np.nan
+        })
     
     df = pd.DataFrame(학생들)
     
@@ -679,21 +696,22 @@ def 예시_엑셀_생성():
         cell.alignment = center
         cell.border = border
     
-    # 비고 셀 색 구분
-    비고_col = 4  # D열
+    # 조건 셀 색 구분
+    다른반_col = 4  # D열: '다른 반 조건'
+    같은반_col = 5  # E열: '같은 반 조건'
     for row in range(2, ws.max_row + 1):
         for col in range(1, ws.max_column + 1):
             c = ws.cell(row, col)
             c.alignment = center
             c.border = border
         
-        비고값 = ws.cell(row, 비고_col).value
-        if 비고값:
-            비고문자 = str(비고값)
-            if '같은반:' in 비고문자:
-                ws.cell(row, 비고_col).fill = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")
-            elif '-' in 비고문자 or 비고문자 in ['동명이인', '쌍둥이', '운동부']:
-                ws.cell(row, 비고_col).fill = PatternFill(start_color="FADBD8", end_color="FADBD8", fill_type="solid")
+        다른반값 = ws.cell(row, 다른반_col).value
+        if 다른반값:
+            ws.cell(row, 다른반_col).fill = PatternFill(start_color="FADBD8", end_color="FADBD8", fill_type="solid")
+        
+        같은반값 = ws.cell(row, 같은반_col).value
+        if 같은반값:
+            ws.cell(row, 같은반_col).fill = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")
     
     for col in ws.columns:
         letter = col[0].column_letter
@@ -771,29 +789,35 @@ if uploaded_file:
         with st.expander("📋 파일 미리보기 (클릭하여 펼치기)"):
             st.dataframe(df_원본.head(10), use_container_width=True)
         
-        # 비고 컬럼 분석 표시
-        if '비고' in df_원본.columns:
-            비고있는 = df_원본[df_원본['비고'].notna()]
-            if len(비고있는) > 0:
-                with st.expander(f"🔍 배치 조건 확인 ({len(비고있는)}건 발견)"):
-                    같은반_rows = []
-                    다른반_rows = []
-                    for _, row in 비고있는.iterrows():
-                        이름 = row.get('성명', row.get('이름', '?'))
-                        비고값 = str(row['비고'])
-                        if 비고값.startswith('같은반:'):
-                            같은반_rows.append((이름, 비고값))
-                        else:
-                            다른반_rows.append((이름, 비고값))
-                    
-                    if 같은반_rows:
-                        st.markdown("**✅ 같은 반 조건**")
-                        for 이름, 비고값 in 같은반_rows:
-                            st.write(f"• **{이름}** → {비고값}")
-                    if 다른반_rows:
-                        st.markdown("**🚫 다른 반 조건**")
-                        for 이름, 비고값 in 다른반_rows:
-                            st.write(f"• **{이름}** → {비고값}")
+        # 조건 컬럼 분석 표시
+        조건_건수 = 0
+        다른반_컬럼명 = next((c for c in ['다른 반 조건', '다른반조건', '다른반 조건', '비고'] if c in df_원본.columns), None)
+        같은반_컬럼명 = next((c for c in ['같은 반 조건', '같은반조건', '같은반 조건'] if c in df_원본.columns), None)
+        
+        다른반_rows = []
+        같은반_rows = []
+        
+        if 다른반_컬럼명:
+            for _, row in df_원본[df_원본[다른반_컬럼명].notna()].iterrows():
+                이름 = row.get('성명', row.get('이름', '?'))
+                다른반_rows.append((이름, str(row[다른반_컬럼명])))
+        
+        if 같은반_컬럼명:
+            for _, row in df_원본[df_원본[같은반_컬럼명].notna()].iterrows():
+                이름 = row.get('성명', row.get('이름', '?'))
+                같은반_rows.append((이름, str(row[같은반_컬럼명])))
+        
+        조건_건수 = len(다른반_rows) + len(같은반_rows)
+        if 조건_건수 > 0:
+            with st.expander(f"🔍 배치 조건 확인 ({조건_건수}건 발견)"):
+                if 다른반_rows:
+                    st.markdown("**🚫 다른 반 조건**")
+                    for 이름, 값 in 다른반_rows:
+                        st.write(f"• **{이름}** → {값}")
+                if 같은반_rows:
+                    st.markdown("**✅ 같은 반 조건**")
+                    for 이름, 값 in 같은반_rows:
+                        st.write(f"• **{이름}** → {값}")
     except Exception as e:
         st.error(f"❌ 파일을 읽을 수 없습니다: {str(e)}")
         st.stop()
@@ -927,39 +951,39 @@ else:
     
     파일에 다음 컬럼이 있어야 합니다:
     
-    | 이름(또는 성명) | 성별 | 성적(또는 평균/총점) | 비고 (선택) |
-    |:---:|:---:|:---:|:---:|
-    | 홍길동 | 남 | 85.5 | 동명이인 |
-    | 김영희 | 여 | 92.3 | |
-    | 홍길동 | 남 | 78.1 | 동명이인 |
-    | 이민수 | 남 | 88.0 | 이민수-박지호 |
-    | 박지호 | 남 | 76.2 | 이민수-박지호 |
-    | 최수진 | 여 | 91.0 | 같은반:최수진-김나리 |
-    | 김나리 | 여 | 87.5 | 같은반:최수진-김나리 |
+    | 이름(또는 성명) | 성별 | 성적(또는 평균/총점) | 다른 반 조건 (선택) | 같은 반 조건 (선택) |
+    |:---:|:---:|:---:|:---:|:---:|
+    | 김길복 | 남 | 85.5 | 동명이인 | |
+    | 이순이 | 여 | 92.3 | | |
+    | 김길복 | 남 | 78.1 | 동명이인 | |
+    | 박만수 | 남 | 88.0 | 박만수-최덕배 | |
+    | 최덕배 | 남 | 76.2 | 박만수-최덕배 | |
+    | 장옥분 | 여 | 91.0 | | 장옥분-강순이 |
+    | 강순이 | 여 | 87.5 | | 장옥분-강순이 |
     
-    ### 🚫 다른 반 조건 (비고 컬럼)
+    ### 🚫 다른 반 조건 컬럼
     
-    **비고 컬럼**에 아래 내용을 적으면 해당 학생들이 **자동으로 다른 반**에 배치됩니다:
+    **'다른 반 조건'** 컬럼에 아래 내용을 적으면 해당 학생들이 **자동으로 다른 반**에 배치됩니다:
     
-    | 비고에 적을 내용 | 의미 | 예시 |
+    | 적을 내용 | 의미 | 예시 |
     |:---:|:---|:---|
-    | `동명이인` | 같은 이름의 학생들을 분리 | 홍길동이 2명일 때 |
+    | `동명이인` | 같은 이름의 학생들을 분리 | 김길복이 2명일 때 |
     | `쌍둥이` | 쌍둥이를 분리 | 형제/자매 분리 |
     | `운동부` | 운동부원끼리 분리 | 운동부 분산 배치 |
-    | `이름-이름` | 특정 학생끼리 분리 | 이민수-박지호 |
+    | `이름-이름` | 특정 학생끼리 분리 | 박만수-최덕배 |
     
-    💡 **'-'로 묶기**: 어떤 이유로든 떨어뜨리고 싶은 학생이 있으면, 양쪽 학생의 비고에 `학생A이름-학생B이름`을 똑같이 적어주세요. 3명도 가능합니다: `학생A-학생B-학생C`
+    💡 **'-'로 묶기**: 어떤 이유로든 떨어뜨리고 싶은 학생이 있으면, 양쪽 학생의 칸에 `학생A이름-학생B이름`을 똑같이 적어주세요. 3명도 가능합니다: `학생A-학생B-학생C`
     
-    ### ✅ 같은 반 조건 (비고 컬럼)
+    ### ✅ 같은 반 조건 컬럼
     
-    **비고 컬럼**에 `같은반:` 으로 시작하는 내용을 적으면 해당 학생들이 **무조건 같은 반**에 배치됩니다:
+    **'같은 반 조건'** 컬럼에 `이름-이름` 형식으로 적으면 해당 학생들이 **무조건 같은 반**에 배치됩니다:
     
-    | 비고에 적을 내용 | 의미 |
+    | 적을 내용 | 의미 |
     |:---:|:---|
-    | `같은반:이름A-이름B` | 이름A와 이름B를 같은 반에 배치 |
-    | `같은반:이름A-이름B-이름C` | 3명을 모두 같은 반에 배치 |
+    | `이름A-이름B` | 이름A와 이름B를 같은 반에 배치 |
+    | `이름A-이름B-이름C` | 3명을 모두 같은 반에 배치 |
     
-    💡 **같은 반에 묶고 싶은 학생들**: 양쪽 학생의 비고에 `같은반:학생A이름-학생B이름`을 똑같이 적어주세요.
+    💡 **같은 반에 묶고 싶은 학생들**: 양쪽 학생의 칸에 `학생A이름-학생B이름`을 똑같이 적어주세요.
     
     ⚠️ 같은 반 조건에 걸린 학생은 평균 조정 단계에서 교환 대상에서 제외됩니다.
     """)
