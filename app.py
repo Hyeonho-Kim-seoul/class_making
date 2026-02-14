@@ -501,7 +501,7 @@ class 반배치프로그램:
         self.로그(f"  👥 반별 인원 차이: {max(반별인원)-min(반별인원)}명")
 
     def 결과_엑셀생성(self):
-        """엑셀 다운로드용 BytesIO 반환"""
+        """엑셀 다운로드용 BytesIO 반환 - 3개 시트: 새반기준, 기존반기준, 반별통계"""
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
         
         df = self.배치결과.copy()
@@ -520,81 +520,131 @@ class 반배치프로그램:
         df['남자중순위'] = df.apply(lambda x: int(x['남자중순위']) if x['성별'] == '남' and pd.notna(x.get('남자중순위')) else '', axis=1)
         df['여자중순위'] = df.apply(lambda x: int(x['여자중순위']) if x['성별'] == '여' and pd.notna(x.get('여자중순위')) else '', axis=1)
         
-        df_정렬 = df.sort_values(by=['배정반', '성별', '성적'], ascending=[True, True, False]).reset_index(drop=True)
+        # 기존반/번호 컬럼 존재 여부 확인
+        기존반_있음 = '반' in df.columns
+        번호_있음 = '번호' in df.columns
         
+        # === Sheet 1: 새반 기준 (배정반 → 성별 → 성적 순) ===
+        df_새반 = df.sort_values(by=['배정반', '성별', '성적'], ascending=[True, True, False]).reset_index(drop=True)
+        
+        # === Sheet 2: 기존반 기준 (기존반 → 번호 순, 없으면 이름순) ===
+        if 기존반_있음 and 번호_있음:
+            df_기존반 = df.sort_values(by=['반', '번호', '이름'], ascending=[True, True, True]).reset_index(drop=True)
+        elif 기존반_있음:
+            df_기존반 = df.sort_values(by=['반', '이름'], ascending=[True, True]).reset_index(drop=True)
+        else:
+            # 기존반 정보가 없으면 이름순 정렬
+            df_기존반 = df.sort_values(by=['이름'], ascending=[True]).reset_index(drop=True)
+        
+        # 표시할 컬럼 순서 결정 (내부용 컬럼 제외)
+        내부_컬럼 = {'동명이인', '쌍둥이', '운동부', '분리그룹', '반배치'}
+        우선_컬럼 = []
+        if 기존반_있음:
+            우선_컬럼.append('반')
+        if 번호_있음:
+            우선_컬럼.append('번호')
+        우선_컬럼 += ['배정반', '이름', '성별', '성적', '남자중순위', '여자중순위']
+        나머지_컬럼 = [c for c in df.columns if c not in 우선_컬럼 and c not in 내부_컬럼]
+        전체_컬럼 = 우선_컬럼 + 나머지_컬럼
+        전체_컬럼 = [c for c in 전체_컬럼 if c in df.columns]
+        
+        df_새반 = df_새반[전체_컬럼]
+        df_기존반 = df_기존반[전체_컬럼]
+        
+        # === Sheet 3: 반별통계 ===
+        통계 = []
+        for 반번호 in range(1, self.반개수 + 1):
+            반데이터 = df[df['배정반'] == 반번호]
+            남자 = 반데이터[반데이터['성별'] == '남']
+            여자 = 반데이터[반데이터['성별'] == '여']
+            통계.append({
+                '반': f"{반번호}반",
+                '전체인원': len(반데이터),
+                '남자인원': len(남자),
+                '여자인원': len(여자),
+                '전체평균': round(반데이터['성적'].mean(), 2),
+                '남자평균': round(남자['성적'].mean(), 2) if len(남자) > 0 else 0,
+                '여자평균': round(여자['성적'].mean(), 2) if len(여자) > 0 else 0,
+                '최고점': round(반데이터['성적'].max(), 2),
+                '최저점': round(반데이터['성적'].min(), 2),
+            })
+        df_통계 = pd.DataFrame(통계)
+        
+        # === 엑셀 쓰기 ===
         output = io.BytesIO()
-        
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_정렬.to_excel(writer, sheet_name='배치결과', index=False)
-            
-            통계 = []
-            for 반번호 in range(1, self.반개수 + 1):
-                반데이터 = df_정렬[df_정렬['배정반'] == 반번호]
-                남자 = 반데이터[반데이터['성별'] == '남']
-                여자 = 반데이터[반데이터['성별'] == '여']
-                통계.append({
-                    '반': f"{반번호}반",
-                    '전체인원': len(반데이터),
-                    '남자인원': len(남자),
-                    '여자인원': len(여자),
-                    '전체평균': round(반데이터['성적'].mean(), 2),
-                    '남자평균': round(남자['성적'].mean(), 2) if len(남자) > 0 else 0,
-                    '여자평균': round(여자['성적'].mean(), 2) if len(여자) > 0 else 0,
-                    '최고점': round(반데이터['성적'].max(), 2),
-                    '최저점': round(반데이터['성적'].min(), 2),
-                })
-            pd.DataFrame(통계).to_excel(writer, sheet_name='반별통계', index=False)
+            df_새반.to_excel(writer, sheet_name='새반 기준', index=False)
+            df_기존반.to_excel(writer, sheet_name='기존반 기준', index=False)
+            df_통계.to_excel(writer, sheet_name='반별통계', index=False)
         
-        # 서식 적용
+        # === 서식 적용 ===
         from openpyxl import load_workbook
-        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
         
         output.seek(0)
         wb = load_workbook(output)
         
-        ws = wb['배치결과']
-        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_fill_blue = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_fill_orange = PatternFill(start_color="ED7D31", end_color="ED7D31", fill_type="solid")
+        header_fill_green = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
         header_font = Font(bold=True, color="FFFFFF", size=11)
         center = Alignment(horizontal="center", vertical="center")
         border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = center
-        
         반_색상 = {1: "E7E6F7", 2: "FCE4D6", 3: "D9F2E6", 4: "FFF2CC", 5: "F4CCCC", 6: "E2EFD9", 7: "FCE4EC", 8: "FFF9E6"}
-        배정반_col = df_정렬.columns.get_loc('배정반') + 1
         
-        for row in range(2, ws.max_row + 1):
-            반 = ws.cell(row, 배정반_col).value
-            fill = PatternFill(start_color=반_색상.get(반, "FFFFFF"), end_color=반_색상.get(반, "FFFFFF"), fill_type="solid")
-            for col in range(1, ws.max_column + 1):
-                c = ws.cell(row, col)
-                c.fill = fill
-                c.alignment = center
-                c.border = border
+        def _시트_서식(ws, df_src, header_fill, 색상기준컬럼='배정반'):
+            """공통 시트 서식 적용"""
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = center
+                cell.border = border
+            
+            색상_col_idx = None
+            if 색상기준컬럼 in df_src.columns:
+                색상_col_idx = df_src.columns.get_loc(색상기준컬럼) + 1
+            
+            for row in range(2, ws.max_row + 1):
+                반값 = ws.cell(row, 색상_col_idx).value if 색상_col_idx else None
+                fill = PatternFill(
+                    start_color=반_색상.get(반값, "FFFFFF"),
+                    end_color=반_색상.get(반값, "FFFFFF"),
+                    fill_type="solid"
+                ) if 반값 else PatternFill(fill_type=None)
+                
+                for col in range(1, ws.max_column + 1):
+                    c = ws.cell(row, col)
+                    c.fill = fill
+                    c.alignment = center
+                    c.border = border
+            
+            for col_cells in ws.columns:
+                letter = col_cells[0].column_letter
+                max_len = max((len(str(c.value or '')) for c in col_cells), default=8)
+                ws.column_dimensions[letter].width = min(max_len + 3, 30)
         
-        for col in ws.columns:
-            letter = col[0].column_letter
-            max_len = max((len(str(c.value or '')) for c in col), default=8)
-            ws.column_dimensions[letter].width = min(max_len + 2, 30)
+        # Sheet 1: 새반 기준 (파란 헤더, 배정반 색상)
+        _시트_서식(wb['새반 기준'], df_새반, header_fill_blue, '배정반')
         
-        ws2 = wb['반별통계']
-        stat_fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
-        for cell in ws2[1]:
-            cell.fill = stat_fill
+        # Sheet 2: 기존반 기준 (주황 헤더, 배정반 색상)
+        _시트_서식(wb['기존반 기준'], df_기존반, header_fill_orange, '배정반')
+        
+        # Sheet 3: 반별통계 (초록 헤더)
+        ws_stat = wb['반별통계']
+        for cell in ws_stat[1]:
+            cell.fill = header_fill_green
             cell.font = header_font
             cell.alignment = center
-        for row in range(2, ws2.max_row + 1):
-            for col in range(1, ws2.max_column + 1):
-                c = ws2.cell(row, col)
+            cell.border = border
+        for row in range(2, ws_stat.max_row + 1):
+            for col in range(1, ws_stat.max_column + 1):
+                c = ws_stat.cell(row, col)
                 c.alignment = center
                 c.border = border
-        for col in ws2.columns:
-            letter = col[0].column_letter
-            max_len = max((len(str(c.value or '')) for c in col), default=8)
-            ws2.column_dimensions[letter].width = min(max_len + 2, 20)
+        for col_cells in ws_stat.columns:
+            letter = col_cells[0].column_letter
+            max_len = max((len(str(c.value or '')) for c in col_cells), default=8)
+            ws_stat.column_dimensions[letter].width = min(max_len + 3, 20)
         
         output2 = io.BytesIO()
         wb.save(output2)
