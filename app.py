@@ -16,6 +16,7 @@ class 반배치프로그램:
         self.남자_정렬 = None
         self.여자_정렬 = None
         self.배치결과 = None
+        self.같은반_그룹 = []  # [{이름1, 이름2}, ...] 같은 반에 넣어야 할 그룹
         self.로그 = 로그_콜백 or (lambda x: None)
         
     def 전체_자동실행(self, 반개수, 엑셀데이터, 목표평균차이=0.3):
@@ -68,6 +69,7 @@ class 반배치프로그램:
         
         # 비고 컬럼에서 제약조건 추출
         if '비고' in self.학생데이터.columns:
+            # === 다른 반 조건 ===
             self.학생데이터['동명이인'] = self.학생데이터['비고'].apply(
                 lambda x: '동명이인' if pd.notna(x) and '동명이인' in str(x) else np.nan
             )
@@ -84,14 +86,40 @@ class 반배치프로그램:
                         self.학생데이터.loc[같은이름, '동명이인'] = 이름
             
             # 비고에서 '-'로 연결된 분리그룹 추출 (예: "홍길동-김영희" → 다른 반 배치)
+            # '같은반:' 으로 시작하는 항목은 제외
             self.학생데이터['분리그룹'] = self.학생데이터['비고'].apply(
-                lambda x: str(x).strip() if pd.notna(x) and '-' in str(x) else np.nan
+                lambda x: str(x).strip() if pd.notna(x) and '-' in str(x) and not str(x).strip().startswith('같은반:') else np.nan
             )
             
-            # 분리그룹 발견 시 로그
             분리_수 = self.학생데이터['분리그룹'].notna().sum()
             if 분리_수 > 0:
-                self.로그(f"  ✓ 분리그룹 {분리_수}건 발견 (비고에서 '-'로 연결된 학생)")
+                self.로그(f"  ✓ [다른 반 조건] 분리그룹 {분리_수}건 발견")
+            
+            # === 같은 반 조건 ===
+            # '같은반:이름A-이름B' 형식 → 같은 반에 배치
+            self.같은반_그룹 = []
+            같은반_엔트리 = self.학생데이터[self.학생데이터['비고'].apply(
+                lambda x: pd.notna(x) and str(x).strip().startswith('같은반:')
+            )]['비고'].unique()
+            
+            for 항목 in 같은반_엔트리:
+                이름부분 = str(항목).replace('같은반:', '').strip()
+                학생들 = {s.strip() for s in 이름부분.split('-') if s.strip()}
+                if len(학생들) >= 2:
+                    # 기존 그룹과 합치기 (겹치는 이름이 있으면)
+                    합침 = False
+                    for 기존그룹 in self.같은반_그룹:
+                        if 기존그룹 & 학생들:
+                            기존그룹.update(학생들)
+                            합침 = True
+                            break
+                    if not 합침:
+                        self.같은반_그룹.append(학생들)
+            
+            if self.같은반_그룹:
+                self.로그(f"  ✓ [같은 반 조건] {len(self.같은반_그룹)}그룹 발견")
+                for 그룹 in self.같은반_그룹:
+                    self.로그(f"    → {', '.join(그룹)}")
         
         필수컬럼 = ['이름', '성별', '성적']
         누락컬럼 = [c for c in 필수컬럼 if c not in self.학생데이터.columns]
@@ -137,6 +165,33 @@ class 반배치프로그램:
             제약그룹[학생] = list(set(제약그룹[학생]))
         return 제약그룹
     
+    def _같은반_파트너반_찾기(self, 학생이름, 배치):
+        """같은 반 조건이 있는 파트너가 이미 배치된 반 번호 반환 (없으면 None)"""
+        for 그룹 in self.같은반_그룹:
+            if 학생이름 in 그룹:
+                for 파트너 in 그룹:
+                    if 파트너 == 학생이름:
+                        continue
+                    for 반번호, 학생들 in 배치.items():
+                        파트너_이름들 = [self.학생데이터.loc[i, '이름'] for i in 학생들]
+                        if 파트너 in 파트너_이름들:
+                            return 반번호
+        return None
+    
+    def _같은반_확인(self, 학생이름):
+        """학생이 같은반 조건에 포함되어 있는지 확인"""
+        for 그룹 in self.같은반_그룹:
+            if 학생이름 in 그룹:
+                return True
+        return False
+    
+    def _같은반_파트너들(self, 학생이름):
+        """학생의 같은반 파트너 이름 목록 반환"""
+        for 그룹 in self.같은반_그룹:
+            if 학생이름 in 그룹:
+                return [s for s in 그룹 if s != 학생이름]
+        return []
+    
     def _뱀드래프트_배치(self, 정렬데이터, 제약그룹, 반별최대인원, 시작오프셋=0):
         배치 = {i: [] for i in range(1, self.반개수 + 1)}
         반순서_원본 = list(range(1, self.반개수 + 1))
@@ -148,12 +203,18 @@ class 반배치프로그램:
             
             배치완료 = False
             기본반번호 = 현재순서[idx % self.반개수]
-            시도순서 = [기본반번호] + [r for r in 현재순서 if r != 기본반번호]
+            학생이름 = 학생['이름']
+            
+            # 같은 반 조건: 파트너가 이미 배치되었으면 그 반 우선
+            파트너반 = self._같은반_파트너반_찾기(학생이름, 배치)
+            if 파트너반 is not None:
+                시도순서 = [파트너반] + [r for r in 현재순서 if r != 파트너반]
+            else:
+                시도순서 = [기본반번호] + [r for r in 현재순서 if r != 기본반번호]
             
             for 반번호 in 시도순서:
                 if len(배치[반번호]) >= 반별최대인원[반번호]:
                     continue
-                학생이름 = 학생['이름']
                 if 학생이름 in 제약그룹:
                     배치된학생들 = [self.학생데이터.loc[i, '이름'] for i in 배치[반번호]]
                     if any(제약 in 배치된학생들 for 제약 in 제약그룹[학생이름]):
@@ -230,8 +291,60 @@ class 반배치프로그램:
                 배치목록.append(학생정보)
         
         self.배치결과 = pd.DataFrame(배치목록)
+        
+        # 같은 반 조건 사후 처리: 혹시 다른 반에 배치된 경우 교정
+        if self.같은반_그룹:
+            self._같은반_사후처리()
+        
         반별인원 = [len(self.배치결과[self.배치결과['배정반'] == i]) for i in range(1, self.반개수 + 1)]
         self.로그(f"  ✓ 배치 완료: {len(self.배치결과)}명 (반별 인원 차이: {max(반별인원)-min(반별인원)}명)")
+    
+    def _같은반_사후처리(self):
+        """같은 반 조건이 위반된 경우, 동일 성별 학생과 교환하여 교정"""
+        제약그룹 = self._제약조건_분석()
+        
+        for 그룹 in self.같은반_그룹:
+            그룹_학생들 = []
+            for 이름 in 그룹:
+                매칭 = self.배치결과[self.배치결과['이름'] == 이름]
+                if len(매칭) > 0:
+                    그룹_학생들.append(매칭.iloc[0])
+            
+            if len(그룹_학생들) < 2:
+                continue
+            
+            # 가장 많은 멤버가 있는 반을 목표 반으로
+            반별카운트 = {}
+            for 학생 in 그룹_학생들:
+                반 = 학생['배정반']
+                반별카운트[반] = 반별카운트.get(반, 0) + 1
+            목표반 = max(반별카운트, key=반별카운트.get)
+            
+            # 다른 반에 있는 멤버를 목표 반으로 이동 (동일 성별 교환)
+            for 학생 in 그룹_학생들:
+                if 학생['배정반'] == 목표반:
+                    continue
+                
+                현재반 = int(학생['배정반'])
+                학생성별 = 학생['성별']
+                
+                # 목표반에서 같은 성별 교환 대상 찾기
+                목표반_같은성별 = self.배치결과[
+                    (self.배치결과['배정반'] == 목표반) &
+                    (self.배치결과['성별'] == 학생성별) &
+                    (~self.배치결과['이름'].isin(그룹))
+                ]
+                
+                if len(목표반_같은성별) > 0:
+                    # 성적 차이가 가장 작은 학생과 교환
+                    목표반_같은성별 = 목표반_같은성별.copy()
+                    목표반_같은성별['성적차이'] = abs(목표반_같은성별['성적'] - 학생['성적'])
+                    교환대상 = 목표반_같은성별.sort_values('성적차이').iloc[0]
+                    
+                    # 교환 실행
+                    self.배치결과.loc[학생.name, '배정반'] = 목표반
+                    self.배치결과.loc[교환대상.name, '배정반'] = 현재반
+                    self.로그(f"  ✓ [같은 반 조정] {학생['이름']}({현재반}반→{목표반}반) ↔ {교환대상['이름']}({목표반}반→{현재반}반)")
     
     def _성적분포분석(self):
         반별평균 = []
@@ -295,6 +408,9 @@ class 반배치프로그램:
                                 예상차이 = 최대차이계산(새평균)
                                 
                                 if 예상차이 < 최선의_차이:
+                                    # 같은반 조건 학생은 교환 금지
+                                    if self._같은반_확인(학생A['이름']) or self._같은반_확인(학생B['이름']):
+                                        continue
                                     if not self._제약조건_확인(학생A['이름'], 반B, 제약그룹, 학생B['이름']) and \
                                        not self._제약조건_확인(학생B['이름'], 반A, 제약그룹, 학생A['이름']):
                                         최선의_차이 = 예상차이
@@ -324,6 +440,9 @@ class 반배치프로그램:
                                             새평균[반C] = (반별평균[반C]*len(반C데이터) - c['성적'] + b['성적'])/len(반C데이터)
                                             예상차이 = 최대차이계산(새평균)
                                             if 예상차이 < 최선의_차이:
+                                                # 같은반 조건 학생은 교환 금지
+                                                if any(self._같은반_확인(s['이름']) for s in [a, b, c]):
+                                                    continue
                                                 if not any([
                                                     self._제약조건_확인(a['이름'], 반B, 제약그룹, b['이름']),
                                                     self._제약조건_확인(b['이름'], 반C, 제약그룹, c['이름']),
@@ -475,6 +594,118 @@ class 반배치프로그램:
         return output2
 
 
+def 예시_엑셀_생성():
+    """예시 학생명부 엑셀을 BytesIO로 생성 (3반용, 30명)"""
+    np.random.seed(2026)
+    
+    성_목록 = ['김', '이', '박', '최', '정', '강', '조', '윤', '장', '임', '한', '오', '서', '신', '권', '황', '안', '송', '류', '홍']
+    이름_남 = ['민준', '서준', '도윤', '예준', '시우', '하준', '주원', '지호', '지훈', '준서', '건우', '현우', '선우', '우진', '민재']
+    이름_여 = ['서윤', '서연', '지우', '하은', '하윤', '민서', '지유', '윤서', '채원', '수아', '지아', '다은', '예은', '소율', '지민']
+    
+    학생들 = []
+    
+    # 남자 15명
+    for i in range(15):
+        성 = 성_목록[i % len(성_목록)]
+        이름 = 이름_남[i]
+        성적 = round(np.random.uniform(40, 100), 1)
+        비고 = ''
+        
+        if i == 0:  # 김민준 - 동명이인 예시
+            이름 = '민준'
+            성 = '김'
+        elif i == 5:  # 또다른 김민준
+            이름 = '민준'
+            성 = '김'
+            비고 = '동명이인'
+        elif i == 1:
+            비고 = '운동부'
+        elif i == 7:
+            비고 = '운동부'
+        elif i == 3:
+            비고 = '최예준-한건우'  # 다른 반 조건
+        elif i == 10:
+            비고 = '최예준-한건우'  # 다른 반 조건
+        elif i == 4:
+            비고 = '같은반:정시우-조주원'  # 같은 반 조건
+        elif i == 6:
+            비고 = '같은반:정시우-조주원'  # 같은 반 조건
+        
+        학생들.append({'성명': 성 + 이름, '성별': '남', '평균': 성적, '비고': 비고 if 비고 else np.nan})
+    
+    # 동명이인 첫번째에도 비고 추가
+    학생들[0]['비고'] = '동명이인'
+    
+    # 여자 15명
+    for i in range(15):
+        성 = 성_목록[(i + 5) % len(성_목록)]
+        이름 = 이름_여[i]
+        성적 = round(np.random.uniform(40, 100), 1)
+        비고 = ''
+        
+        if i == 2:
+            비고 = '쌍둥이'
+        elif i == 3:
+            비고 = '쌍둥이'
+        elif i == 8:
+            비고 = '같은반:신채원-권수아'  # 같은 반 조건
+        elif i == 9:
+            비고 = '같은반:신채원-권수아'  # 같은 반 조건
+        
+        학생들.append({'성명': 성 + 이름, '성별': '여', '평균': 성적, '비고': 비고 if 비고 else np.nan})
+    
+    df = pd.DataFrame(학생들)
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='학생명부', index=False)
+    
+    # 서식 추가
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    
+    output.seek(0)
+    wb = load_workbook(output)
+    ws = wb['학생명부']
+    
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    center = Alignment(horizontal="center", vertical="center")
+    border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = border
+    
+    # 비고 셀 색 구분
+    비고_col = 4  # D열
+    for row in range(2, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            c = ws.cell(row, col)
+            c.alignment = center
+            c.border = border
+        
+        비고값 = ws.cell(row, 비고_col).value
+        if 비고값:
+            비고문자 = str(비고값)
+            if '같은반:' in 비고문자:
+                ws.cell(row, 비고_col).fill = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")
+            elif '-' in 비고문자 or 비고문자 in ['동명이인', '쌍둥이', '운동부']:
+                ws.cell(row, 비고_col).fill = PatternFill(start_color="FADBD8", end_color="FADBD8", fill_type="solid")
+    
+    for col in ws.columns:
+        letter = col[0].column_letter
+        max_len = max((len(str(c.value or '')) for c in col), default=8)
+        ws.column_dimensions[letter].width = min(max_len + 4, 30)
+    
+    output2 = io.BytesIO()
+    wb.save(output2)
+    output2.seek(0)
+    return output2
+
+
 # ========================================
 # Streamlit 웹 UI
 # ========================================
@@ -544,10 +775,25 @@ if uploaded_file:
         if '비고' in df_원본.columns:
             비고있는 = df_원본[df_원본['비고'].notna()]
             if len(비고있는) > 0:
-                with st.expander(f"🔍 분리 조건 확인 ({len(비고있는)}건 발견)"):
+                with st.expander(f"🔍 배치 조건 확인 ({len(비고있는)}건 발견)"):
+                    같은반_rows = []
+                    다른반_rows = []
                     for _, row in 비고있는.iterrows():
                         이름 = row.get('성명', row.get('이름', '?'))
-                        st.write(f"• **{이름}** → {row['비고']}")
+                        비고값 = str(row['비고'])
+                        if 비고값.startswith('같은반:'):
+                            같은반_rows.append((이름, 비고값))
+                        else:
+                            다른반_rows.append((이름, 비고값))
+                    
+                    if 같은반_rows:
+                        st.markdown("**✅ 같은 반 조건**")
+                        for 이름, 비고값 in 같은반_rows:
+                            st.write(f"• **{이름}** → {비고값}")
+                    if 다른반_rows:
+                        st.markdown("**🚫 다른 반 조건**")
+                        for 이름, 비고값 in 다른반_rows:
+                            st.write(f"• **{이름}** → {비고값}")
     except Exception as e:
         st.error(f"❌ 파일을 읽을 수 없습니다: {str(e)}")
         st.stop()
@@ -688,8 +934,10 @@ else:
     | 홍길동 | 남 | 78.1 | 동명이인 |
     | 이민수 | 남 | 88.0 | 이민수-박지호 |
     | 박지호 | 남 | 76.2 | 이민수-박지호 |
+    | 최수진 | 여 | 91.0 | 같은반:최수진-김나리 |
+    | 김나리 | 여 | 87.5 | 같은반:최수진-김나리 |
     
-    ### 🚫 분리 조건 (비고 컬럼)
+    ### 🚫 다른 반 조건 (비고 컬럼)
     
     **비고 컬럼**에 아래 내용을 적으면 해당 학생들이 **자동으로 다른 반**에 배치됩니다:
     
@@ -701,7 +949,34 @@ else:
     | `이름-이름` | 특정 학생끼리 분리 | 이민수-박지호 |
     
     💡 **'-'로 묶기**: 어떤 이유로든 떨어뜨리고 싶은 학생이 있으면, 양쪽 학생의 비고에 `학생A이름-학생B이름`을 똑같이 적어주세요. 3명도 가능합니다: `학생A-학생B-학생C`
+    
+    ### ✅ 같은 반 조건 (비고 컬럼)
+    
+    **비고 컬럼**에 `같은반:` 으로 시작하는 내용을 적으면 해당 학생들이 **무조건 같은 반**에 배치됩니다:
+    
+    | 비고에 적을 내용 | 의미 |
+    |:---:|:---|
+    | `같은반:이름A-이름B` | 이름A와 이름B를 같은 반에 배치 |
+    | `같은반:이름A-이름B-이름C` | 3명을 모두 같은 반에 배치 |
+    
+    💡 **같은 반에 묶고 싶은 학생들**: 양쪽 학생의 비고에 `같은반:학생A이름-학생B이름`을 똑같이 적어주세요.
+    
+    ⚠️ 같은 반 조건에 걸린 학생은 평균 조정 단계에서 교환 대상에서 제외됩니다.
     """)
+    
+    # 예시 엑셀 다운로드
+    st.markdown("---")
+    st.markdown("### 📥 예시 파일 다운로드")
+    st.info("💡 엑셀 양식이 헷갈리시면, 아래 예시 파일을 다운로드해서 참고하세요!")
+    
+    예시_데이터 = 예시_엑셀_생성()
+    st.download_button(
+        label="📥 예시 학생명부 다운로드 (30명, 3반용)",
+        data=예시_데이터,
+        file_name="예시_학생명부.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 # 하단 정보
 st.markdown("---")
